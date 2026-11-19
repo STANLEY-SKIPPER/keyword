@@ -475,6 +475,7 @@ html[data-theme='contrast'] .letter.wrong { text-decoration-thickness: 0.14em; }
   left: 0;
   width: 1px;
   height: 1px;
+  font-size: 16px; /* 16px or larger stops phones zooming in when it's focused */
   padding: 0;
   border: 0;
   opacity: 0;
@@ -1090,11 +1091,11 @@ html { scroll-padding-top: env(safe-area-inset-top, 0px); }
         <input id="typing-input" class="typing-input" type="text" autocomplete="off"
                autocapitalize="off" autocorrect="off" spellcheck="false"
                aria-label="Typing area. Type the words shown on screen.">
-        <p class="focus-hint" aria-hidden="true">Click here to keep typing</p>
+        <p class="focus-hint" aria-hidden="true">Click or tap here to keep typing</p>
       </div>
 
       <div class="test-foot">
-        <p class="hint" id="start-hint">Click the words and start typing. The timer starts with your first key.</p>
+        <p class="hint" id="start-hint">Click or tap the words, then start typing. The timer starts with your first key.</p>
         <p class="caps-warning" id="caps-warning" role="status" hidden>Caps Lock is on</p>
         <button type="button" class="btn btn-quiet" id="restart-btn">Restart <kbd>Esc</kbd></button>
       </div>
@@ -1528,6 +1529,8 @@ const el = {};
 let wordEls = [];
 let state = null;
 let timer = null;
+let keyHandled = false; // a key press was just handled in handleKey
+const CURSOR_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']);
 const callbacks = { onStart() {}, onFinish() {} };
 
 // ---------------------------------------------------------------------------
@@ -1556,12 +1559,19 @@ function initTest(handlers) {
   // A hidden text box receives the key presses; the words above it are what
   // people look at. Clicking anywhere on the typing area puts focus back.
   el.input.addEventListener('keydown', handleKey);
-  el.input.addEventListener('input', () => { el.input.value = ''; });
+  el.input.addEventListener('input', handleInput);
+  el.input.addEventListener('paste', (event) => event.preventDefault());
+  el.input.addEventListener('drop', (event) => event.preventDefault());
   el.input.addEventListener('focus', () => el.box.classList.add('focused'));
   el.input.addEventListener('blur', () => el.box.classList.remove('focused'));
   el.box.addEventListener('mousedown', (event) => {
     event.preventDefault();
     focusTyping();
+  });
+  // A tap on a phone: open the on-screen keyboard and keep the words in view.
+  el.box.addEventListener('click', () => {
+    focusTyping();
+    keepWordsInView();
   });
   window.addEventListener('resize', scrollToCurrent);
 }
@@ -1589,6 +1599,7 @@ function newTest(config) {
     correctTimes: [],  // when each correct key was pressed (for the pace tip)
   };
 
+  el.input.value = '';
   renderHeading();
   buildWords();
   updateBars();
@@ -1618,24 +1629,84 @@ function handleKey(event) {
   if (key === 'Backspace') {
     event.preventDefault();
     if (state.started) deleteBack(event.ctrlKey || event.altKey);
+    keyWasHandled();
     return;
   }
 
   // Leave browser shortcuts such as Ctrl+R or Cmd+L alone.
   if (event.ctrlKey || event.metaKey || event.altKey) return;
 
-  if (key === ' ') {
+  // Keys that would move the cursor inside the hidden box do nothing.
+  if (CURSOR_KEYS.has(key)) {
     event.preventDefault();
-    if (state.started) finishWord();
     return;
   }
 
-  // Shift, arrows, Tab, Enter, Escape and so on are not typing.
+  if (key === ' ') {
+    event.preventDefault();
+    if (state.started) finishWord();
+    keyWasHandled();
+    return;
+  }
+
+  // Shift, Tab, Enter, Escape and so on are not typing. Phone keyboards often
+  // report "Unidentified" here; their typing arrives through handleInput.
   if (key.length !== 1) return;
 
   event.preventDefault();
   if (!state.started) start();
   typeLetter(key);
+  keyWasHandled();
+}
+
+// After a key is handled here, keep the hidden box in step with the word, and
+// ignore an input event from the same key press if the browser sends one anyway.
+function keyWasHandled() {
+  keyHandled = true;
+  setTimeout(() => { keyHandled = false; }, 0);
+  syncBox();
+}
+
+// Phone keyboards usually don't say which key was pressed: they put text
+// straight into the hidden box. Compare the box with the word typed so far
+// and apply the difference: new letters, spaces, deletions, or a word the
+// keyboard replaced.
+function handleInput() {
+  if (!state || state.finished || keyHandled) {
+    syncBox();
+    return;
+  }
+  const value = el.input.value;
+  const before = state.input;
+  let same = 0;
+  while (same < before.length && same < value.length && before[same] === value[same]) same += 1;
+  if (same < before.length) {
+    state.input = before.slice(0, same);
+    renderWord(state.wordIndex);
+  }
+  for (const ch of value.slice(same)) {
+    if (state.finished) break;
+    if (ch === ' ') {
+      if (state.started) finishWord();
+      continue;
+    }
+    if (!state.started) start();
+    typeLetter(ch);
+  }
+  syncBox();
+}
+
+// The hidden box always holds the current word (and nothing between tests).
+function syncBox() {
+  const wanted = state && !state.finished ? state.input : '';
+  if (el.input.value !== wanted) el.input.value = wanted;
+}
+
+// On phones, the on-screen keyboard covers the bottom of the screen, so after
+// a tap, scroll the progress bars and words up to stay in view.
+function keepWordsInView() {
+  if (!window.matchMedia('(max-width: 40rem)').matches) return;
+  setTimeout(() => el.meters.scrollIntoView({ block: 'start' }), 350);
 }
 
 function typeLetter(letter) {
@@ -1745,6 +1816,7 @@ function finish(reachedGoal) {
   }
   state.finished = true;
   stopTimer();
+  el.input.value = '';
   renderWord(state.wordIndex); // removes the caret
   updateBars();
   el.box.classList.remove('running');
