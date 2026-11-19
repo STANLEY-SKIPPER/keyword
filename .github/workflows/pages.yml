@@ -1,0 +1,40 @@
+# Publishes KeyWord to GitHub Pages whenever main changes.
+# Live site: https://stanley-skipper.github.io/keyword/
+name: Publish to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # lets you re-publish by hand from the Actions tab
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One publish at a time; a newer one waits for the current one to finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Get the files
+        uses: actions/checkout@v7
+
+      - name: Set up GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Package the site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: .
+
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@v5
